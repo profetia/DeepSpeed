@@ -20,7 +20,7 @@ try:
 except ImportError as e:
     dsa2 = None
 
-SUPPORTED_ACCELERATOR_LIST = ['cuda', 'cpu', 'xpu', 'xpu.external', 'npu', 'mps', 'hpu', 'mlu', 'sdaa']
+SUPPORTED_ACCELERATOR_LIST = ['cuda', 'cpu', 'xpu', 'xpu.external', 'npu', 'mps', 'hpu', 'mlu', 'sdaa', 'xla']
 
 ds_accelerator = None
 
@@ -105,6 +105,11 @@ def get_accelerator():
                 import torch_mlu  # noqa: F401
             except ImportError as e:
                 raise ValueError("MLU_Accelerator requires torch_mlu, which is not installed on this system.")
+        elif accelerator_name == "xla":
+            try:
+                import torch_xla  # noqa: F401
+            except ImportError as e:
+                raise ValueError("XLA_Accelerator requires torch_xla, which is not installed on this system.")
         elif accelerator_name not in SUPPORTED_ACCELERATOR_LIST:
             raise ValueError(f'DS_ACCELERATOR must be one of {SUPPORTED_ACCELERATOR_LIST}. '
                              f'Value "{accelerator_name}" is not supported')
@@ -190,6 +195,13 @@ def get_accelerator():
                 pass
         if accelerator_name is None:
             try:
+                import torch_xla  # noqa: F401,F811
+
+                accelerator_name = "xla"
+            except ImportError as e:
+                pass
+        if accelerator_name is None:
+            try:
                 import torch
 
                 # Determine if we are on a GPU or x86 CPU with torch.
@@ -251,6 +263,10 @@ def get_accelerator():
         from .hpu_accelerator import HPU_Accelerator
 
         ds_accelerator = HPU_Accelerator()
+    elif accelerator_name == 'xla':
+        from .xla_accelerator import XLA_Accelerator
+
+        ds_accelerator = XLA_Accelerator()
     elif accelerator_name == 'mlu':
         from .mlu_accelerator import MLU_Accelerator
 

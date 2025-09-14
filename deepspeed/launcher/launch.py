@@ -129,6 +129,13 @@ def terminate_process_tree(pid):
     for p in alive:
         p.kill()
 
+def _wrapper_function(local_cardinal, app, args):
+    import runpy
+    import sys
+
+    sys.argv = [app] + args
+    runpy.run_path(app, run_name="__main__")
+
 
 def main():
     args = parse_args()
@@ -218,43 +225,61 @@ def main():
                     raise ValueError(f"unable to create directory {args.enable_each_rank_log} for each rank log.")
             log_name_prefix = time.strftime("%Y%m%d%H%M%S", time.localtime())
 
-        for local_proc in range(0, num_local_procs):
-            # each process's rank
-            dist_rank = global_rank_mapping[local_node][local_proc]
-            local_rank = dist_rank % num_local_procs
-            current_env["RANK"] = str(dist_rank)
-            current_env["LOCAL_RANK"] = str(local_rank)
+        if get_accelerator().device_name() == "xla":
+            import torch_xla.distributed.xla_multiprocessing as xmp
 
-            # spawn the processes
-            cmd = []
-            if args.bind_cores_to_rank:
-                cores_per_rank, numactl_cmd = get_numactl_cmd(args.bind_core_list, num_local_procs, local_rank)
-                current_env["OMP_NUM_THREADS"] = f"{cores_per_rank}"
-                cmd = cmd + numactl_cmd
-            if not args.no_python:
-                cmd.append(sys.executable)
-                cmd.append("-u")
-                if args.module:
-                    cmd.append("-m")
-            else:
-                if args.module:
-                    raise ValueError("Don't use both the '--no_python' flag"
-                                     " and the '--module' flag at the same time.")
-            cmd.append(args.training_script)
-            # A user may not want to pass local_rank as a keyword arg so we make this optional.
-            if not args.no_local_rank:
-                cmd.append(f"--local_rank={local_rank}")
-            cmd += args.training_script_args
+            from accelerate.utils import patch_environment
 
-            if args.enable_each_rank_log != "None":
-                log_file = os.path.join(args.enable_each_rank_log, f"{log_name_prefix}_rank{dist_rank}.log")
-                log_fd = open(log_file, 'w')
-                process = subprocess.Popen(cmd, env=current_env, stdout=log_fd, stderr=log_fd)
-            else:
-                process = subprocess.Popen(cmd, env=current_env)
-            # logs the command from processes
-            logger.info(f"process {process.pid} spawned with command: {cmd}")
-            processes.append(process)
+            spawn_kwargs = {}
+            if num_local_procs == 1:
+                spawn_kwargs["nprocs"] = 1
+
+            with patch_environment(**current_env):
+                # TODO
+                xmp.spawn(
+                    _wrapper_function,
+                    args=(args.training_script, args.training_script_args),
+                    start_method='fork',
+                    **spawn_kwargs
+                )
+        else:
+            for local_proc in range(0, num_local_procs):
+                # each process's rank
+                dist_rank = global_rank_mapping[local_node][local_proc]
+                local_rank = dist_rank % num_local_procs
+                current_env["RANK"] = str(dist_rank)
+                current_env["LOCAL_RANK"] = str(local_rank)
+
+                # spawn the processes
+                cmd = []
+                if args.bind_cores_to_rank:
+                    cores_per_rank, numactl_cmd = get_numactl_cmd(args.bind_core_list, num_local_procs, local_rank)
+                    current_env["OMP_NUM_THREADS"] = f"{cores_per_rank}"
+                    cmd = cmd + numactl_cmd
+                if not args.no_python:
+                    cmd.append(sys.executable)
+                    cmd.append("-u")
+                    if args.module:
+                        cmd.append("-m")
+                else:
+                    if args.module:
+                        raise ValueError("Don't use both the '--no_python' flag"
+                                        " and the '--module' flag at the same time.")
+                cmd.append(args.training_script)
+                # A user may not want to pass local_rank as a keyword arg so we make this optional.
+                if not args.no_local_rank:
+                    cmd.append(f"--local_rank={local_rank}")
+                cmd += args.training_script_args
+
+                if args.enable_each_rank_log != "None":
+                    log_file = os.path.join(args.enable_each_rank_log, f"{log_name_prefix}_rank{dist_rank}.log")
+                    log_fd = open(log_file, 'w')
+                    process = subprocess.Popen(cmd, env=current_env, stdout=log_fd, stderr=log_fd)
+                else:
+                    process = subprocess.Popen(cmd, env=current_env)
+                # logs the command from processes
+                logger.info(f"process {process.pid} spawned with command: {cmd}")
+                processes.append(process)
     else:
         from ..elasticity import DSElasticAgent
         from torch.distributed.elastic.rendezvous import RendezvousParameters

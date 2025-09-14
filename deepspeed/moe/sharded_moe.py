@@ -171,8 +171,8 @@ def _capacity(gates: Tensor, capacity_factor: Tensor, min_capacity: Tensor) -> T
 
 
 @torch.jit.script
-def _top_idx(source, k):
-    return torch.topk(source, k=k, dim=0)[1]
+def _top_idx(source: torch.Tensor, k: int):
+    return source.topk(k=k, dim=0)[1]
 
 
 @torch.jit.script
