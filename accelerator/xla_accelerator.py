@@ -6,6 +6,7 @@ import os
 import functools
 import torch
 
+from multiprocessing import Pool
 
 from .abstract_accelerator import DeepSpeedAccelerator
 
@@ -20,6 +21,40 @@ try:
     _XLA_AVAILABLE = True
 except ImportError as e:
     _XLA_AVAILABLE = False
+
+
+if _XLA_AVAILABLE:
+    from torch_xla.distributed.xla_backend import _ret_work, ProcessGroupXla
+
+    def __allgather_base_wrapper(self, output_tensor: torch.Tensor,
+                      input_tensor: torch.Tensor, opts):
+        is_scalar = (input_tensor.dim() == 0)
+        if is_scalar:
+            input_tensor = torch.reshape(input_tensor, (1,))
+
+        result = xm.all_gather(
+            input_tensor, dim=0, groups=self._mesh, pin_layout=False)
+
+        if result.shape == output_tensor.shape:
+            output_tensor.copy_(result, non_blocking=True)
+            return _ret_work([output_tensor])
+
+        stacked_result = torch.stack(
+            torch.split(result, input_tensor.shape[0], dim=0), dim=0)
+        if stacked_result.shape == output_tensor.shape:
+            output_tensor.copy_(stacked_result, non_blocking=True)
+            return _ret_work([output_tensor])
+
+        msg = f"Input shape {input_tensor.shape} and output shape {output_tensor.shape} are not compatible for all_gather_into_tensor. Input must be stacked or concatenated to create output."
+        raise ValueError(msg)
+
+    ProcessGroupXla._allgather_base = __allgather_base_wrapper
+
+
+def _device_count_wrapper():
+    import torch_xla as xla
+
+    return xla.device_count()
 
 
 class XLA_Accelerator(DeepSpeedAccelerator):
@@ -54,21 +89,23 @@ class XLA_Accelerator(DeepSpeedAccelerator):
         pass
 
     def current_device(self):
-        rank = os.environ.get("LOCAL_RANK", 0)
-        return int(rank)
+        return 0
 
     def current_device_name(self):
         return "xla"
 
+    @functools.lru_cache(maxsize=1)
     def device_count(self):
-        # TODO: Use xla.device_count() will attach the runtime to process that does not actually use it.
-        # return xla.device_count()
-
-        device_count = os.environ.get("DEEPSPEED_XLA_DEVICE_COUNT", 1)
-        return int(device_count)
+        # Neuron cores cannot be attached to another process unless using `xmp.spawn`
+        # or released from previous process. When querying `xla.device_count()` on a
+        # launcher process, we want avoid calling `xla.device_count()` directly as we
+        # don't want to actually attach to the devices.
+        with Pool(1) as pool:
+            device_count = pool.apply(_device_count_wrapper)
+            return device_count
 
     def synchronize(self, device_index=None):
-        xla.sync()
+        xla.sync(wait=True)
 
     # RNG APIs
     def random(self):

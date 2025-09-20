@@ -129,12 +129,12 @@ def terminate_process_tree(pid):
     for p in alive:
         p.kill()
 
-def _wrapper_function(local_cardinal, app, args):
+def _xla_spawn_wrapper(_, training_script, training_script_args):
     import runpy
     import sys
 
-    sys.argv = [app] + args
-    runpy.run_path(app, run_name="__main__")
+    sys.argv = [training_script] + training_script_args
+    runpy.run_path(training_script, run_name="__main__")
 
 
 def main():
@@ -237,7 +237,7 @@ def main():
             with patch_environment(**current_env):
                 # TODO
                 xmp.spawn(
-                    _wrapper_function,
+                    _xla_spawn_wrapper,
                     args=(args.training_script, args.training_script_args),
                     start_method='fork',
                     **spawn_kwargs

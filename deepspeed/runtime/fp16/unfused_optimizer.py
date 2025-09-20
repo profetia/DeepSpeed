@@ -272,6 +272,11 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
             scaled_loss = (loss.float()) * self.cur_scale
             scaled_loss.backward(create_graph=create_graph, retain_graph=retain_graph)
 
+        if get_accelerator().device_name() == 'xla':
+            import torch_xla.core.xla_model as xm
+
+            xm.mark_step()
+
     def _update_scale(self, skip):
         if self.dynamic_loss_scale:
             prev_scale = self.cur_scale
