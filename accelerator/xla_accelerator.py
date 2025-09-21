@@ -26,7 +26,9 @@ except ImportError as e:
 if _XLA_AVAILABLE:
     from torch_xla.distributed.xla_backend import _ret_work, ProcessGroupXla
 
-    def __allgather_base_wrapper(self, output_tensor: torch.Tensor,
+
+    # https://github.com/pytorch/xla/blob/d517649bdef6ab0519c30c704bde8779c8216502/torch_xla/distributed/xla_backend.py#L86
+    def __allgather_base_patch(self, output_tensor: torch.Tensor,
                       input_tensor: torch.Tensor, opts):
         is_scalar = (input_tensor.dim() == 0)
         if is_scalar:
@@ -48,7 +50,19 @@ if _XLA_AVAILABLE:
         msg = f"Input shape {input_tensor.shape} and output shape {output_tensor.shape} are not compatible for all_gather_into_tensor. Input must be stacked or concatenated to create output."
         raise ValueError(msg)
 
-    ProcessGroupXla._allgather_base = __allgather_base_wrapper
+    ProcessGroupXla._allgather_base = __allgather_base_patch
+
+
+    # https://github.com/aws-neuron/aws-neuron-sdk/issues/1240
+    _broadcast_original = ProcessGroupXla.broadcast
+
+    def _broadcast_patch(self, tensors, opts):
+        group_src = opts.rootRank
+        global_src = torch.distributed.get_global_rank(self, group_src)
+        opts.rootRank = global_src
+        return _broadcast_original(self, tensors, opts)
+    
+    ProcessGroupXla.broadcast = _broadcast_patch
 
 
 def _device_count_wrapper():
@@ -96,6 +110,9 @@ class XLA_Accelerator(DeepSpeedAccelerator):
 
     @functools.lru_cache(maxsize=1)
     def device_count(self):
+        if "LOCAL_SIZE" in os.environ or "LOCAL_WORLD_SIZE" in os.environ:
+            return xla.device_count()
+
         # Neuron cores cannot be attached to another process unless using `xmp.spawn`
         # or released from previous process. When querying `xla.device_count()` on a
         # launcher process, we want avoid calling `xla.device_count()` directly as we

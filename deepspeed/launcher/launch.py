@@ -21,7 +21,7 @@ import signal
 import psutil
 from collections import defaultdict
 from typing import Dict
-from argparse import ArgumentParser, REMAINDER
+from argparse import ArgumentParser, Namespace, REMAINDER
 from ..constants import TORCH_DISTRIBUTED_DEFAULT_PORT, CROSS_RANK, CROSS_SIZE
 from deepspeed.accelerator import get_accelerator
 from ..nebula.constants import DLTS_POD_ENV_PATH
@@ -129,12 +129,30 @@ def terminate_process_tree(pid):
     for p in alive:
         p.kill()
 
-def _xla_spawn_wrapper(_, training_script, training_script_args):
+def _xla_spawn_wrapper(
+    local_proc: int,
+    args: Namespace,
+    num_local_procs: int,
+    local_rank_mapping: list[int],
+):
     import runpy
     import sys
 
-    sys.argv = [training_script] + training_script_args
-    runpy.run_path(training_script, run_name="__main__")
+    from accelerate.utils import patch_environment
+
+    current_env = os.environ.copy()
+    dist_rank = local_rank_mapping[local_proc]
+    current_env["RANK"] = str(dist_rank)
+    current_env["LOCAL_RANK"] = str(local_proc)
+
+    cmd = []
+    cmd.append(args.training_script)
+    cmd.append(f"--local_rank={local_proc}")
+    cmd += args.training_script_args
+
+    with patch_environment(**current_env):
+        sys.argv = cmd
+        runpy.run_path(args.training_script, run_name="__main__")
 
 
 def main():
@@ -230,16 +248,31 @@ def main():
 
             from accelerate.utils import patch_environment
 
+            if args.no_local_rank:
+                raise ValueError("XLA backend requires local_rank to be passed to the training script. "
+                                 "Please do not set the --no_local_rank flag.")
+
+            if args.bind_cores_to_rank:
+                raise ValueError("Binding cores to rank is not supported with XLA backend.")
+            
+            if args.enable_each_rank_log != "None":
+                raise ValueError("Logging each rank separately is not supported with XLA backend.")
+
+            start_method = 'fork'
+
             spawn_kwargs = {}
             if num_local_procs == 1:
                 spawn_kwargs["nprocs"] = 1
 
             with patch_environment(**current_env):
-                # TODO
                 xmp.spawn(
                     _xla_spawn_wrapper,
-                    args=(args.training_script, args.training_script_args),
-                    start_method='fork',
+                    args=(
+                        args,
+                        num_local_procs,
+                        global_rank_mapping[local_node],
+                    ),
+                    start_method=start_method,
                     **spawn_kwargs
                 )
         else:

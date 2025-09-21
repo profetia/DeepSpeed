@@ -1163,7 +1163,13 @@ class DeepSpeedEngine(Module):
             return None
 
     def _set_distributed_vars(self, args):
-        device_rank = args.device_rank if args is not None and hasattr(args, 'device_rank') else self.local_rank
+        if args is not None and hasattr(args, 'device_rank'):
+            device_rank = args.device_rank
+        elif get_accelerator().device_name() != 'xla':
+            device_rank = self.local_rank
+        else:
+            device_rank = 0
+
         if device_rank >= 0:
             get_accelerator().set_device(device_rank)
             self.device = torch.device(get_accelerator().device_name(device_rank))
