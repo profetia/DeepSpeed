@@ -65,6 +65,18 @@ if _XLA_AVAILABLE:
     ProcessGroupXla.broadcast = _broadcast_patch
 
 
+    from torch import _utils
+
+    def __rebuild_device_tensor_from_cpu_tensor_patch(data, dtype, device, requires_grad):
+        device = _utils._get_restore_location(device)
+        tensor = data.to(device=device, dtype=dtype)
+        if tensor.requires_grad != requires_grad:
+            tensor.requires_grad_ = requires_grad
+        return tensor
+    
+    _utils._rebuild_device_tensor_from_cpu_tensor = __rebuild_device_tensor_from_cpu_tensor_patch
+
+
 def _device_count_wrapper():
     import torch_xla as xla
 

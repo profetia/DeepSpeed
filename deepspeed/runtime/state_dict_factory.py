@@ -94,8 +94,7 @@ class SDLoaderBase(ABC):
         if num_ckpt == mp_world_size:
             assert os.path.exists(load_path)
             #logger.info(f'rank: {mp_rank} loading checkpoint: {load_path}')
-            sd = self.checkpoint_engine.load(load_path, map_location=lambda storage, \
-                loc: storage)
+            sd = self.checkpoint_engine.load(load_path)
 
             if quantize:
                 quantizer = WeightQuantization(mlp_extra_grouping=mlp_extra_grouping, mp_size=mp_world_size)
@@ -167,7 +166,7 @@ class SDLoaderBase(ABC):
         #logger.info(f'checkpoint file list: {self.ckpt_list}')
         assert len(self.ckpt_list) > 0
 
-        sd = self.checkpoint_engine.load(self.ckpt_list[0], map_location=lambda storage, loc: storage)
+        sd = self.checkpoint_engine.load(self.ckpt_list[0])
 
         # check checkpoint count is same with saved mp_world_size
         if 'mp_world_size' in sd.keys():
