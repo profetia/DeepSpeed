@@ -134,7 +134,7 @@ class XLA_Accelerator(DeepSpeedAccelerator):
             return device_count
 
     def synchronize(self, device_index=None):
-        xla.sync(wait=True)
+        xm.mark_step()
 
     # RNG APIs
     def random(self):

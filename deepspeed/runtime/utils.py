@@ -264,6 +264,10 @@ class CheckOverflow(object):
         elif self.deepspeed is not None and self.deepspeed.enable_backward_allreduce is False:
             dist.all_reduce(overflow_gpu, op=dist.ReduceOp.MAX, group=dist.get_world_group())
 
+        # Synchronize before accessing `overflow_gpu`
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         overflow = overflow_gpu[0].item()
         return bool(overflow)
 
@@ -274,7 +278,14 @@ class CheckOverflow(object):
             # if x is half, the .float() incurs an additional deep copy, but it's necessary if
             # Pytorch's .sum() creates a one-element tensor of the same type as x
             # (which is true for some recent version of pytorch).
-            cpu_sum = float(x.float().sum())
+
+            cuda_sum = x.float().sum()
+
+            # Synchronize before accessing `cuda_sum`
+            if get_accelerator().device_name() == 'xla':
+                get_accelerator().synchronize()
+
+            cpu_sum = float(cuda_sum)
             # More efficient version that can be used if .sum() returns a Python scalar
             # cpu_sum = float(x.sum())
         except RuntimeError as instance:
@@ -512,14 +523,19 @@ def get_weight_norm(parameters, norm_type=2, mpu=None):
 
     norm_type = float(norm_type)
     if norm_type == inf:
-        total_norm = max(p.data.abs().max() for p in parameters)
-        total_norm_cuda = get_accelerator().FloatTensor([float(total_norm)])
+        total_norm = torch.max(torch.stack([p.data.abs().max() for p in parameters]))
+        total_norm_cuda = total_norm.reshape(1)
         # Take max across all GPUs.
         if mpu is not None:
             dist.all_reduce(total_norm_cuda, op=dist.ReduceOp.MAX, group=mpu.get_model_parallel_group())
+
+        # Synchronize before accessing `total_norm_cuda`
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         total_norm = total_norm_cuda[0].item()
     else:
-        total_norm = 0.
+        total_norm = get_accelerator().FloatTensor(0.0)
         tensor_mp_rank = bwc_tensor_model_parallel_rank(mpu=mpu)
         for p in parameters:
             # Pipeline parallelism may replicate parameters. Avoid multi-counting.
@@ -535,9 +551,14 @@ def get_weight_norm(parameters, norm_type=2, mpu=None):
             total_norm += param_norm**norm_type
 
         # Sum across all model parallel GPUs.
-        total_norm_cuda = get_accelerator().FloatTensor([float(total_norm)])
+        total_norm_cuda = total_norm.reshape(1)
         if mpu is not None:
             dist.all_reduce(total_norm_cuda, op=dist.ReduceOp.SUM, group=mpu.get_model_parallel_group())
+
+        # Synchronize before accessing `total_norm_cuda`        
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+        
         total_norm = total_norm_cuda[0].item()**(1. / norm_type)
 
     if total_norm == float('inf') or total_norm == -float('inf') or total_norm != total_norm:

@@ -272,10 +272,9 @@ class FP16_UnfusedOptimizer(DeepSpeedOptimizer):
             scaled_loss = (loss.float()) * self.cur_scale
             scaled_loss.backward(create_graph=create_graph, retain_graph=retain_graph)
 
+        # Remove this synchronization will trigger a neuronx-cc bug
         if get_accelerator().device_name() == 'xla':
-            import torch_xla.core.xla_model as xm
-
-            xm.mark_step()
+            get_accelerator().synchronize()
 
     def _update_scale(self, skip):
         if self.dynamic_loss_scale:
