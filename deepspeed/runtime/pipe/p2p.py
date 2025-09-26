@@ -19,6 +19,11 @@ _async = []
 
 
 def can_send_recv() -> bool:
+    # Remove this is will cause neuronx-torch to raise `NotImplementedError`
+    # https://github.com/aws-neuron/aws-neuron-sdk/issues/1189
+    if get_accelerator().device_name() == 'xla':
+        return False
+
     return required_torch_version(min_version=1.8)
 
 

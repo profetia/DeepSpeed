@@ -212,7 +212,10 @@ class PipelineModule(nn.Module):
 
         #with torch.random.fork_rng(devices=[get_accelerator().current_device_name()]):
         self._build()
-        self.to(get_accelerator().device_name(self.local_rank))
+        if get_accelerator().device_name() == 'xla':
+            self.to(get_accelerator().current_device_name())
+        else:
+            self.to(get_accelerator().device_name(self.local_rank))
 
         self.tied_comms = self._index_tied_modules()
         self._synchronize_tied_weights()

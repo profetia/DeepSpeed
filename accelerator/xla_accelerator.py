@@ -27,7 +27,7 @@ if _XLA_AVAILABLE:
     from torch_xla.distributed.xla_backend import _ret_work, ProcessGroupXla
 
 
-    # https://github.com/pytorch/xla/blob/d517649bdef6ab0519c30c704bde8779c8216502/torch_xla/distributed/xla_backend.py#L86
+    #! https://github.com/pytorch/xla/blob/d517649bdef6ab0519c30c704bde8779c8216502/torch_xla/distributed/xla_backend.py#L86
     def __allgather_base_patch(self, output_tensor: torch.Tensor,
                       input_tensor: torch.Tensor, opts):
         is_scalar = (input_tensor.dim() == 0)
@@ -53,7 +53,7 @@ if _XLA_AVAILABLE:
     ProcessGroupXla._allgather_base = __allgather_base_patch
 
 
-    # https://github.com/aws-neuron/aws-neuron-sdk/issues/1240
+    #! https://github.com/aws-neuron/aws-neuron-sdk/issues/1240
     _broadcast_original = ProcessGroupXla.broadcast
 
     def _broadcast_patch(self, tensors, opts):
@@ -75,6 +75,10 @@ if _XLA_AVAILABLE:
         return tensor
     
     _utils._rebuild_device_tensor_from_cpu_tensor = __rebuild_device_tensor_from_cpu_tensor_patch
+
+    #! https://github.com/aws-neuron/neuronx-distributed/issues/24
+    #! When torch.autocast is not used, you cannot use torch.autocast(enabled=False) to turn off autocasting.
+    #! Instead, you have to use a no-op context manager. Otherwise, it will trigger a bug in neuronx.
 
 
 def _device_count_wrapper():

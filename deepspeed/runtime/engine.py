@@ -8,6 +8,7 @@ import re
 import stat
 import torch
 import hashlib
+from contextlib import nullcontext
 from collections import defaultdict, OrderedDict, deque
 from shutil import copyfile
 import gc
@@ -2133,7 +2134,7 @@ class DeepSpeedEngine(Module):
         validate_nested_autocast(self)
         with torch.autocast(device_type=get_accelerator().device_name(),
                             dtype=self.torch_autocast_dtype(),
-                            enabled=self.torch_autocast_enabled()):
+                            enabled=self.torch_autocast_enabled()) if self.torch_autocast_enabled() else nullcontext():
             loss = self.module(*inputs, **kwargs)
 
         if self.autotuning_profile_model_info():

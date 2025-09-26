@@ -11,6 +11,7 @@ from operator import mul
 import torch
 from deepspeed import comm as dist
 
+from deepspeed.accelerator import get_accelerator
 from deepspeed.utils import logger
 from deepspeed.utils.timer import ThroughputTimer
 from deepspeed.runtime.bf16_optimizer import BF16_Optimizer
@@ -239,6 +240,10 @@ class PipelineEngine(DeepSpeedEngine):
             if not self.is_last_stage():
                 p2p.send(self.loss, self.next_stage)
 
+        # Synchronize XLA devices after initial P2P communication
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         # XXX look into timer reporting timing
         # Initialize some timers because of early weirdness.
         if self.wall_clock_breakdown():
@@ -289,6 +294,10 @@ class PipelineEngine(DeepSpeedEngine):
             if grad is not None:
                 dist.all_reduce(grad, group=group)
 
+                # Synchronize XLA devices after reducing tied weights
+                if get_accelerator().device_name() == 'xla':
+                    get_accelerator().synchronize()
+
     def _exec_reduce_grads(self):
         self._force_grad_boundary = True
         if self.pipeline_enable_backward_allreduce:
@@ -297,6 +306,11 @@ class PipelineEngine(DeepSpeedEngine):
                 self._bf16_reduce_grads()
             else:
                 self.allreduce_gradients(bucket_size=MEMORY_OPT_ALLREDUCE_SIZE)
+
+        # Synchronize XLA devices after reducing gradients
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         self._force_grad_boundary = False
 
     def _bf16_reduce_grads(self):
@@ -647,6 +661,11 @@ class PipelineEngine(DeepSpeedEngine):
                     name: losses[2 + i].clone().detach()
                     for i, name in enumerate(additional_losses.keys())
                 })
+
+        # Synchronize XLA devices after reducing and broadcasting loss
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         return agg_loss
 
     def set_dataloader(self, loader):
@@ -733,6 +752,10 @@ class PipelineEngine(DeepSpeedEngine):
             inputs = inputs[0] if len(inputs) == 1 else inputs
             self.pipe_buffers['inputs'][buffer_id] = inputs
 
+        # Synchronize XLA devices after collecting inputs
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         # inputs has no gradient because it is from a cloned tensor
         outputs = super().forward(inputs)
 
@@ -740,6 +763,10 @@ class PipelineEngine(DeepSpeedEngine):
         # Need to call this between evaluation iterations
         if not self.module.training:
             ds_checkpointing.reset()
+
+        # Synchronize XLA devices after forward
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
 
         # Partition the outputs if we are not the last stage
         if self.is_pipe_partitioned and not self.is_last_stage():
@@ -762,6 +789,10 @@ class PipelineEngine(DeepSpeedEngine):
             part = None
 
         self.pipe_buffers['outputs'][buffer_id] = outputs
+
+        # Synchronize XLA devices after dispatching outputs
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
 
         # Optionally compute loss on the last device
         if self.is_last_stage():
@@ -802,6 +833,10 @@ class PipelineEngine(DeepSpeedEngine):
                     total = self.total_additional_losses[name] if name in self.total_additional_losses else None
                     self.total_additional_losses[name] = add_to_total_loss(total, loss)
 
+        # Synchronize XLA devices after computing loss
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
     def _exec_backward_pass(self, buffer_id):
         assert self.optimizer is not None, "must provide optimizer during " \
                                            "init in order to use backward"
@@ -810,6 +845,11 @@ class PipelineEngine(DeepSpeedEngine):
         # mechanisms.
         if self.is_last_stage():
             super().backward(self.loss)
+
+            # Synchronize XLA devices after backward
+            if get_accelerator().device_name() == 'xla':
+                get_accelerator().synchronize()
+
             return
 
         outputs = self.pipe_buffers['outputs'][buffer_id]
@@ -836,6 +876,10 @@ class PipelineEngine(DeepSpeedEngine):
                 self.pipe_buffers['output_tensors'][buffer_id].data = outputs[0]
                 outputs = (self.pipe_buffers['output_tensors'][buffer_id], *outputs[1:])
 
+        # Synchronize XLA devices after reconstructing outputs
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+        
         grad_tensors = self.grad_layer
         if self.is_grad_partitioned:
             #print(f'RANK={self.global_rank} BEFORE-BWD restoring grad={self.grad_layer[0].size()} {self.grad_layer[1].size()}')
@@ -848,6 +892,10 @@ class PipelineEngine(DeepSpeedEngine):
             part_grad = None
             #print(f'RANK={self.global_rank} BEFORE-BWD restored grad={self.grad_layer[0].size()} {self.grad_layer[1].size()}')
 
+        # Synchronize XLA devices after reconstructing grad tensors
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         if self.using_bf16_optimizer and not self.is_last_stage():
             # manually call because we don't call optimizer.backward()
             self.optimizer.clear_lp_grads()
@@ -859,6 +907,11 @@ class PipelineEngine(DeepSpeedEngine):
             torch.autograd.backward(tensors=out_tensors, grad_tensors=grad_tensors)
         else:
             torch.autograd.backward(tensors=(outputs, ), grad_tensors=(grad_tensors, ))
+
+        # Synchronize XLA devices after backward
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
 
         if self.using_bf16_optimizer and not self.is_last_stage():
             # manually call because we don't call optimizer.backward()
@@ -919,6 +972,10 @@ class PipelineEngine(DeepSpeedEngine):
 
             self.pipe_buffers['labels'][buffer_id] = loaded
 
+        # Synchronize XLA devices after loading data to device
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         if self.wall_clock_breakdown():
             self.timers(BATCH_INPUT_TIMER).stop()
 
@@ -967,6 +1024,10 @@ class PipelineEngine(DeepSpeedEngine):
         else:
             raise NotImplementedError(f'Could not send meta type {type(buffer)}')
 
+        # Synchronize XLA devices after sending metadata
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         # Useful for performance debugging.
         '''
         if self.grid.data_parallel_id == 0:
@@ -981,6 +1042,10 @@ class PipelineEngine(DeepSpeedEngine):
         """
         buffer = torch.empty(TENSOR_META_SIZE, dtype=torch.int32, device=self.device)
         p2p.recv(buffer, send_stage)
+
+        # Synchronize XLA devices after accessing `buffer`
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
 
         recv_type = buffer[0].item()
 
@@ -1019,6 +1084,10 @@ class PipelineEngine(DeepSpeedEngine):
 
         outputs = self.pipe_buffers['outputs'][buffer_id]
 
+        # Synchronize XLA devices before accessing `outputs`
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         # NCCL does not like to send torch.BoolTensor types, so cast the mask to half().
         # We could do char, but with half() we can eventually flatten with other fp16
         # messages (TODO)
@@ -1031,6 +1100,10 @@ class PipelineEngine(DeepSpeedEngine):
             self.first_output_send = False
             self._send_tensor_meta(outputs, self.next_stage)
 
+        # Synchronize XLA devices after sending metadata
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         if isinstance(outputs, torch.Tensor):
             p2p.send(outputs, self.next_stage)
         elif isinstance(outputs, tuple):
@@ -1039,6 +1112,10 @@ class PipelineEngine(DeepSpeedEngine):
         else:
             raise NotImplementedError('Could not send output of type '
                                       f'{type(outputs)}')
+
+        # Synchronize XLA devices after sending activations
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
 
         # Restore the boolean tensor
         if self.has_attention_mask or self.has_bool_tensors:
@@ -1071,6 +1148,10 @@ class PipelineEngine(DeepSpeedEngine):
 
             inputs = (part.to_meta(), part.data(), *inputs_grad_tail)
 
+        # Synchronize XLA devices after partitioning gradients
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         # XXX Terrible hack
         # Drop the attention mask from the input buffer here. It does not have
         # a grad that needs to be communicated. We free the buffer immediately
@@ -1102,6 +1183,10 @@ class PipelineEngine(DeepSpeedEngine):
         # We can free up the input buffer now
         self.pipe_buffers['inputs'][buffer_id] = None
 
+        # Synchronize XLA devices after sending gradients
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         if self.wall_clock_breakdown():
             self.timers(PIPE_SEND_GRAD_TIMER).stop()
 
@@ -1114,6 +1199,10 @@ class PipelineEngine(DeepSpeedEngine):
         # Allocate the buffer if necessary
         if self.dynamic_shape or self.pipe_recv_buf is None:
             self.pipe_recv_buf = self._recv_tensor_meta(self.prev_stage)
+
+        # Synchronize XLA devices after receiving metadata
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
 
         if isinstance(self.pipe_recv_buf, torch.Tensor):
             p2p.recv(self.pipe_recv_buf, self.prev_stage)
@@ -1145,6 +1234,10 @@ class PipelineEngine(DeepSpeedEngine):
 
         self.pipe_buffers['inputs'][buffer_id] = recvd
 
+        # Synchronize XLA devices after receiving activations
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         if self.wall_clock_breakdown():
             self.timers(PIPE_RECV_INPUT_TIMER).stop()
 
@@ -1165,6 +1258,10 @@ class PipelineEngine(DeepSpeedEngine):
             outputs = (outputs[0], *outputs[2:])
             # save for backward
             self.pipe_buffers['outputs'][buffer_id] = outputs
+
+        # Synchronize XLA devices after restoring partitioned outputs
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
 
         # Allocate gradient if necessary
         if self.dynamic_shape or self.grad_layer is None:
@@ -1207,6 +1304,10 @@ class PipelineEngine(DeepSpeedEngine):
                     buffer.data = torch.zeros(buffer.size(), dtype=torch.long, device=self.device)
                 p2p.recv(buffer, self.next_stage)
 
+        # Synchronize XLA devices after receiving gradients
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         if self.wall_clock_breakdown():
             self.timers(PIPE_RECV_GRAD_TIMER).stop()
 
@@ -1217,6 +1318,11 @@ class PipelineEngine(DeepSpeedEngine):
 
         self._force_grad_boundary = True
         self._take_model_step(lr_kwargs)
+
+        # Synchronize XLA devices after optimizer step
+        if get_accelerator().device_name() == 'xla':
+            get_accelerator().synchronize()
+
         self._force_grad_boundary = False
 
         if self.global_rank == 0 and self.monitor.enabled:
