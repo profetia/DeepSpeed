@@ -138,7 +138,17 @@ class XLA_Accelerator(DeepSpeedAccelerator):
             return device_count
 
     def synchronize(self, device_index=None):
+        import faulthandler
+        faulthandler.dump_traceback(file=os.sys.stdout, all_threads=False)
+        faulthandler.dump_traceback(file=os.sys.stderr, all_threads=False)
+
+        print(f">>>> pid={os.getpid()}, rank={torch.distributed.get_rank()}\n"
+                f">>> before xm.mark_step()", flush=True)
+
         xm.mark_step()
+
+        print(f">>>> pid={os.getpid()}, rank={torch.distributed.get_rank()}\n"
+                f">>> after xm.mark_step()", flush=True)
 
     # RNG APIs
     def random(self):
